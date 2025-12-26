@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Weekly Tracker</title>
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+
+        // --- FIREBASE SETUP ---
+        const firebaseConfig = {
+          apiKey: "AIzaSyCPKzqjPBawxv2DqMuYdwt5xf8sfyHeUJA",
+          authDomain: "weekly-tracker-ef80d.firebaseapp.com",
+          projectId: "weekly-tracker-ef80d",
+          storageBucket: "weekly-tracker-ef80d.firebasestorage.app",
+          messagingSenderId: "966514744052",
+          appId: "1:966514744052:web:582787f45b48424ea4dca1",
+          measurementId: "G-MFMCVG5N2C"
+        };
+
+        const appId = window.__app_id || 'default-app';
+        let db, auth, user;
+
+        try {
+            if (firebaseConfig.apiKey) {
+                const app = initializeApp(firebaseConfig);
+                auth = getAuth(app);
+                db = getFirestore(app);
+                
+                signInAnonymously(auth).catch((error) => {
+                    console.error("Auth failed", error);
+                    updateStatus('red', "Auth Failed: " + error.message);
+                });
+
+                onAuthStateChanged(auth, (u) => {
+                    if (u) {
+                        user = u;
+                        window.user = u;
+                        console.log("Firebase Connected. User ID:", u.uid);
+                        updateStatus('#4caf50', "Online & Synced");
+
+                        // CRITICAL FIX: Force save local data to cloud immediately upon connection
+                        if (typeof window.saveState === 'function') {
+                            window.saveState();
+                        }
+
+                        // Then start listening for changes from other devices
+                        if (typeof window.syncData === 'function') {
+                            window.syncData();
+                        }
+                    } else {
+                        updateStatus('red', "Disconnected");
+                    }
+                });
+            }
+        } catch (e) {
+            console.error("Firebase Init Error:", e);
+            updateStatus('red', "Init Error");
+        }
+
+        function updateStatus(color, message, clickAction) {
+            const statusDot = document.getElementById('connectionStatus');
+            if(statusDot) {
+                statusDot.style.backgroundColor = color;
+                statusDot.title = message;
+                
+                if (clickAction) {
+                    statusDot.style.cursor = "pointer";
+                    statusDot.onclick = clickAction;
+                } else {
+                    statusDot.style.cursor = "help";
+                    statusDot.onclick = null;
+                }
+            }
+        }
+
+        window.db = db;
+        window.auth = auth;
+        window.user = user;
+        window.appId = appId;
+        window.collection = collection;
+        window.doc = doc;
+        window.setDoc = setDoc;
+        window.getDoc = getDoc;
+        window.onSnapshot = onSnapshot;
+        window.updateStatus = updateStatus;
+    </script>
+
+    <style>
+        :root {
+            --bg-color: #fcfcfc;
+            --text-color: #222;
+            --border-color: #222;
+            --highlight: #222;
+            --font-main: "Courier New", Courier, monospace;
+            --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        }
+
+        * { box-sizing: border-box; }
+
+        body {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            font-family: var(--font-main);
+            margin: 0;
+            padding: 2rem;
+            display: flex;
+            justify-content: center;
+            min-height: 100vh;
+            -webkit-font-smoothing: antialiased;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 900px;
+            background: #fff;
+            border: 2px solid var(--border-color);
+            padding: 2rem;
+            box-shadow: 10px 10px 0px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+            gap: 2rem;
+        }
+
+        /* --- HEADER & TITLES --- */
+        header {
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            border-bottom: 2px solid var(--border-color);
+            padding-bottom: 1rem;
+            gap: 1rem;
+        }
+
+        .title-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        #connectionStatus {
+            width: 10px;
+            height: 10px;
+            background-color: #e53935; /* Red default */
+            border-radius: 50%;
+            display: inline-block;
+            transition: background-color 0.3s;
+            cursor: help;
+        }
+
+        h1 {
+            font-size: 1.5rem;
+            margin: 0;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: -0.5px;
+            line-height: 1.2;
+            cursor: pointer; /* Hint that it's clickable */
+        }
+        h1:hover { text-decoration: underline; text-decoration-style: dashed; }
+
+        .subtitle {
+            font-size: 0.8rem;
+            opacity: 0.7;
+            margin-top: 0.2rem;
+            font-family: var(--font-sans);
+        }
+
+        .week-input-wrapper {
+            display: flex;
+            flex-direction: column;
+            align-items: flex-end;
+            gap: 0.2rem;
+        }
+
+        .editable {
+            background: transparent;
+            border: none;
+            border-bottom: 1px dashed #999;
+            font-family: inherit;
+            color: inherit;
+            outline: none;
+            text-align: right;
+            font-size: 1rem;
+            width: 140px;
+        }
+
+        /* --- BUTTONS --- */
+        button { cursor: pointer; font-family: inherit; }
+
+        .btn-group {
+            display: flex;
+            gap: 0.5rem;
+            justify-content: flex-end;
+            margin-bottom: 0.5rem;
+        }
+
+        .btn-print, .btn-reset {
+            background: var(--text-color);
+            color: var(--bg-color);
+            border: none;
+            padding: 0.5rem 1rem;
+            font-size: 0.75rem;
+            text-transform: uppercase;
+            font-weight: 700;
+            transition: opacity 0.2s;
+        }
+
+        .btn-reset {
+            background: white;
+            color: var(--text-color);
+            border: 1px solid var(--text-color);
+        }
+
+        .btn-print:hover, .btn-reset:hover { opacity: 0.8; }
+
+        /* --- SECTIONS --- */
+        h2 {
+            font-size: 0.9rem;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            margin: 0 0 1rem 0;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-weight: 700;
+        }
+        h2::after {
+            content: ''; flex: 1; height: 1px;
+            background: var(--border-color); opacity: 0.3;
+        }
+
+        /* --- EFFORT SCORE --- */
+        .effort-container {
+            display: flex;
+            align-items: center;
+            gap: 1.5rem;
+            flex-wrap: wrap;
+        }
+        .effort-boxes { display: flex; gap: 0.5rem; }
+        .effort-box {
+            width: 24px; height: 24px;
+            border: 1px solid var(--border-color);
+            cursor: pointer;
+        }
+        .effort-box.filled {
+            background-color: var(--highlight) !important;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+
+        /* --- HABITS TABLE --- */
+        .table-wrapper {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .quests-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9rem;
+            min-width: 500px; /* Force scroll on small mobile */
+        }
+        .quests-table th {
+            text-align: center; padding: 0.5rem;
+            font-weight: normal;
+            border-bottom: 1px solid var(--border-color);
+            width: 40px;
+        }
+        .quests-table th:first-child { text-align: left; width: auto; }
+        .quests-table td {
+            border-bottom: 1px solid #eee; padding: 0.5rem 0;
+        }
+        .habit-check {
+            width: 20px; height: 20px;
+            border: 1px solid #ccc;
+            margin: 0 auto;
+            cursor: pointer;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .habit-check.checked::after {
+            content: ''; width: 12px; height: 12px;
+            background-color: var(--highlight) !important;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+            border-radius: 50%;
+        }
+        .habit-name {
+            width: 100%; border: none; font-family: inherit;
+            font-size: 1rem; outline: none; background: transparent;
+        }
+
+        /* --- DATA VIS --- */
+        .data-vis-container {
+            display: grid;
+            grid-template-columns: 3fr 1fr;
+            gap: 2rem;
+            align-items: start;
+        }
+        .chart-wrapper {
+            position: relative; height: 200px; width: 100%;
+            border-left: 1px solid var(--border-color);
+            border-bottom: 1px solid var(--border-color);
+        }
+        canvas { display: block; width: 100%; height: 100%; }
+        .data-inputs {
+            display: flex; flex-direction: column;
+            gap: 0.5rem; font-size: 0.8rem;
+            font-family: var(--font-sans);
+        }
+        .data-row {
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .data-input-field {
+            width: 40px; border: 1px solid #ccc;
+            padding: 2px; text-align: right; font-family: var(--font-main);
+        }
+
+        /* --- REFLECTION --- */
+        .reflection-grid {
+            display: grid; grid-template-columns: repeat(3, 1fr); gap: 1.5rem;
+        }
+        .reflection-box label {
+            display: block; font-size: 0.8rem; font-weight: bold;
+            margin-bottom: 0.5rem; font-family: var(--font-sans);
+            text-transform: uppercase;
+        }
+        textarea {
+            width: 100%; border: 1px solid #ddd;
+            background: #fafafa; padding: 0.5rem;
+            font-family: var(--font-main); font-size: 0.9rem;
+            resize: none; min-height: 100px; outline: none; line-height: 1.4;
+        }
+        textarea:focus { border-color: #000; background: #fff; }
+
+        /* --- CHAOS BOX --- */
+        .chaos-header {
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        .btn-clear {
+            background: none; border: 1px solid #ccc;
+            padding: 2px 8px; font-size: 0.7rem; text-transform: uppercase;
+        }
+
+        /* --- MOBILE OPTIMIZATIONS --- */
+        @media (max-width: 768px) {
+            body { padding: 0.5rem; }
+            .container { padding: 1rem; gap: 1.5rem; }
+            
+            header {
+                flex-direction: column;
+                align-items: flex-start;
+            }
+            .week-input-wrapper {
+                width: 100%;
+                align-items: flex-start;
+                margin-top: 0.5rem;
+            }
+            .editable { text-align: left; width: 100%; }
+            .btn-group { width: 100%; justify-content: space-between; margin-top: 1rem;}
+            
+            .data-vis-container {
+                grid-template-columns: 1fr; /* Stack chart and inputs */
+            }
+            .data-inputs {
+                display: grid;
+                grid-template-columns: 1fr 1fr; /* 2 columns for inputs on mobile */
+                gap: 1rem;
+            }
+            
+            .reflection-grid {
+                grid-template-columns: 1fr; /* Stack textareas */
+            }
+        }
+
+        @media print {
+            body { background: white; padding: 0; }
+            .container { border: none; box-shadow: none; padding: 0; }
+            .btn-group, .btn-clear, .data-inputs { display: none; }
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- HEADER -->
+    <header>
+        <div>
+            <div class="title-group">
+                <div id="connectionStatus" title="Connecting..."></div>
+                <h1 id="protocolTitle" onclick="renameProtocol()">THE PROTOCOL</h1>
+            </div>
+            <div class="subtitle">v3.4 // Optimized Edition</div>
+        </div>
+        <div style="width: 100%;">
+            <div class="btn-group">
+                <button class="btn-reset" onclick="resetWeek()">↺ Reset Week</button>
+                <button class="btn-print" onclick="window.print()">🖨️ PDF / Drive</button>
+            </div>
+            <div class="week-input-wrapper">
+                <label style="font-size: 0.7rem; font-weight: bold; font-family: var(--font-sans);">WEEK OF:</label>
+                <input type="text" id="weekOf" class="editable" placeholder="DD/MM/YYYY">
+            </div>
+        </div>
+    </header>
+
+    <!-- EFFORT SCORE -->
+    <section>
+        <h2>Effort Score</h2>
+        <div class="effort-container">
+            <div class="effort-boxes" id="effortContainer"></div>
+            <div style="font-size: 0.85rem; font-family: var(--font-sans); color: #555;">
+                <span id="effortCount" style="font-weight: bold;">0/7</span>
+                <span style="margin: 0 0.5rem; color: #ccc;">|</span>
+                <span>Consistency > Perfection</span>
+            </div>
+        </div>
+    </section>
+
+    <!-- QUESTS / HABITS -->
+    <section>
+        <h2>Quests & Habits</h2>
+        <div class="table-wrapper">
+            <table class="quests-table">
+                <thead>
+                    <tr>
+                        <th>QUEST NAME</th>
+                        <th>M</th><th>T</th><th>W</th><th>T</th><th>F</th><th>S</th><th>S</th>
+                    </tr>
+                </thead>
+                <tbody id="habitsBody"></tbody>
+            </table>
+        </div>
+    </section>
+
+    <!-- DATA VISUALIZATION -->
+    <section>
+        <h2>Bio-Metrics</h2>
+        <div class="data-vis-container">
+            <div>
+                <div class="chart-wrapper">
+                    <canvas id="metricsChart"></canvas>
+                </div>
+            </div>
+            <div class="data-inputs" id="dataInputs">
+                <!-- Inputs generated by JS -->
+            </div>
+        </div>
+    </section>
+
+    <!-- REFLECTION -->
+    <section>
+        <h2>Weekly De-Brief</h2>
+        <div class="reflection-grid">
+            <div class="reflection-box">
+                <label>What Worked?</label>
+                <textarea id="ref_worked" oninput="autoResize(this)"></textarea>
+            </div>
+            <div class="reflection-box">
+                <label>What Didn't?</label>
+                <textarea id="ref_didnt" oninput="autoResize(this)"></textarea>
+            </div>
+            <div class="reflection-box">
+                <label>Next Wk Adjustment</label>
+                <textarea id="ref_adjust" oninput="autoResize(this)"></textarea>
+            </div>
+        </div>
+    </section>
+
+    <!-- CHAOS BOX -->
+    <section class="chaos-box">
+        <div class="chaos-header">
+            <h2>Chaos Box</h2>
+            <button class="btn-clear" onclick="clearChaos()">Clear</button>
+        </div>
+        <textarea id="chaosBox" placeholder="Unload your mind here..." oninput="autoResize(this)"></textarea>
+    </section>
+</div>
+
+<script type="module">
+    // Re-importing inside module for logic execution if needed, but main logic is below
+</script>
+
+<script>
+    // --- STATE MANAGEMENT ---
+    const DEFAULT_STATE = {
+        userName: null,
+        weekOf: "",
+        effort: Array(7).fill(false),
+        habits: [
+            { name: "Deep Work (2h)", days: Array(7).fill(false) },
+            { name: "Movement", days: Array(7).fill(false) },
+            { name: "Reading", days: Array(7).fill(false) },
+            { name: "Hydration", days: Array(7).fill(false) },
+            { name: "No Phone AM", days: Array(7).fill(false) },
+            { name: "Skill Practice", days: Array(7).fill(false) },
+            { name: "Journaling", days: Array(7).fill(false) }
+        ],
+        metrics: {
+            screen: Array(7).fill(0),
+            sleep: Array(7).fill(0)
+        },
+        reflection: { worked: "", didnt: "", adjust: "" },
+        chaos: ""
+    };
+
+    let appState = JSON.parse(localStorage.getItem('prithvi_v4')) || DEFAULT_STATE;
+
+    // --- MIGRATION & INIT ---
+    if (appState.habits.length < 7) {
+        const missing = 7 - appState.habits.length;
+        for(let i=0; i<missing; i++) {
+            appState.habits.push({ name: "", days: Array(7).fill(false) });
+        }
+    }
+
+    // --- MAIN INIT ---
+    function init() {
+        // 1. Check Name (Strict check to force prompt if "USER" default found)
+        if (!appState.userName || appState.userName === "USER") {
+            // Small timeout to let UI render first
+            setTimeout(() => {
+                let name = prompt("Enter your name to personalize your protocol:");
+                if (name) {
+                    appState.userName = name.trim();
+                    saveState();
+                } else if (!appState.userName) {
+                    appState.userName = "USER"; // Default if cancelled
+                }
+                updateTitle();
+            }, 100);
+        } else {
+            updateTitle();
+        }
+
+        // 2. Render UI
+        renderWeekInput();
+        renderEffort();
+        renderHabits();
+        renderMetricsInputs();
+        renderReflection();
+        renderChaos();
+        drawChart();
+
+        // 3. Setup Listeners
+        window.addEventListener('resize', drawChart);
+        window.addEventListener('beforeprint', drawChart);
+        
+        // 4. Try Sync (if user already loaded)
+        if(typeof window.syncData === 'function') {
+            window.syncData();
+        }
+    }
+
+    // --- CORE FUNCTIONS ---
+
+    // Expose saveState globally so Module can call it
+    window.saveState = function() {
+        // Save to Local Storage (Instant)
+        localStorage.setItem('prithvi_v4', JSON.stringify(appState));
+        updateTitle();
+        
+        // Sync to Firebase (Background)
+        if (window.user && window.db && window.setDoc && window.doc) {
+            try {
+                // Save specific data
+                const userDoc = window.doc(window.db, 'artifacts', window.appId, 'users', window.user.uid, 'data', 'tracker');
+                // Save meta data (Name)
+                const userMetaDoc = window.doc(window.db, 'artifacts', window.appId, 'users', window.user.uid);
+                
+                window.setDoc(userMetaDoc, { name: appState.userName, lastUpdated: new Date() }, { merge: true });
+                window.setDoc(userDoc, appState, { merge: true })
+                    .then(() => {
+                        console.log("Saved to Cloud");
+                        if(window.updateStatus) window.updateStatus('#4caf50', "Online & Synced");
+                    })
+                    .catch((err) => {
+                        console.error("Save Error:", err);
+                        if (err.code === 'permission-denied' || err.message.includes("permissions")) {
+                             if(window.updateStatus) window.updateStatus('#ff9800', "⚠️ Permission Denied (Click for Fix)", () => {
+                                 alert("FIREBASE PERMISSION ERROR\n\nYour database is blocking writes. To fix:\n\n1. Go to Firebase Console > Build > Firestore Database > Rules\n2. Replace the code with this:\n\nrules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /{document=**} {\n      allow read, write: if request.auth != null;\n    }\n  }\n}\n\n3. Click Publish.");
+                             });
+                        } else {
+                            if(window.updateStatus) window.updateStatus('#ff9800', "Save Error: " + err.message);
+                        }
+                    });
+            } catch (e) {
+                console.error("Firestore Error:", e);
+                if(window.updateStatus) window.updateStatus('red', "Firestore Error");
+            }
+        }
+    }
+
+    function updateTitle() {
+        const titleEl = document.getElementById('protocolTitle');
+        const name = appState.userName ? appState.userName.toUpperCase() : "USER";
+        titleEl.innerText = `THE ${name} PROTOCOL`;
+        titleEl.title = "Click to rename"; // Tooltip
+        
+        const week = appState.weekOf ? appState.weekOf : "Weekly";
+        document.title = `${week} - ${name} Protocol`;
+    }
+
+    window.renameProtocol = function() {
+        let newName = prompt("Rename Protocol to:", appState.userName);
+        if(newName) {
+            appState.userName = newName.trim();
+            saveState();
+        }
+    }
+    
+    // --- FIREBASE SYNC LOGIC ---
+    window.syncData = function() {
+        if (!window.user || !window.db || !window.doc || !window.onSnapshot) return;
+        
+        // Prevent multiple listeners
+        if (window._isSyncing) return;
+        window._isSyncing = true;
+        
+        const docRef = window.doc(window.db, 'artifacts', window.appId, 'users', window.user.uid, 'data', 'tracker');
+        
+        window.onSnapshot(docRef, (snap) => {
+            if (snap.exists()) {
+                const cloudData = snap.data();
+                // Simple check to avoid loops (Cloud vs Local match)
+                if (JSON.stringify(cloudData) !== JSON.stringify(appState)) {
+                    console.log("Syncing data from cloud...");
+                    appState = cloudData;
+                    // Run migration check again just in case cloud data is old structure
+                    if (appState.habits.length < 7) {
+                        const missing = 7 - appState.habits.length;
+                        for(let i=0; i<missing; i++) {
+                            appState.habits.push({ name: "", days: Array(7).fill(false) });
+                        }
+                    }
+                    
+                    localStorage.setItem('prithvi_v4', JSON.stringify(appState));
+                    refreshUI();
+                }
+            }
+        });
+    };
+    
+    function refreshUI() {
+        updateTitle();
+        renderWeekInput();
+        renderEffort();
+        renderHabits();
+        renderMetricsInputs();
+        renderReflection();
+        renderChaos();
+        drawChart();
+    }
+
+    window.resetWeek = function() {
+        if (!confirm("Start a new week? This keeps your Habit Names but clears all checkboxes and data.")) return;
+        
+        // Reset logic
+        appState.effort = Array(7).fill(false);
+        appState.habits.forEach(h => h.days = Array(7).fill(false));
+        appState.metrics.screen = Array(7).fill(0);
+        appState.metrics.sleep = Array(7).fill(0);
+        appState.reflection = { worked: "", didnt: "", adjust: "" };
+        appState.chaos = "";
+        
+        saveState();
+        // Re-render everything
+        refreshUI();
+        // Clear textareas manually since value binding is one-way on init
+        document.querySelectorAll('textarea').forEach(t => t.value = "");
+    }
+
+    // --- RENDERERS ---
+
+    function renderWeekInput() {
+        const el = document.getElementById('weekOf');
+        el.value = appState.weekOf;
+        el.oninput = (e) => {
+            appState.weekOf = e.target.value;
+            saveState();
+        };
+    }
+
+    function renderEffort() {
+        const container = document.getElementById('effortContainer');
+        container.innerHTML = '';
+        appState.effort.forEach((filled, i) => {
+            const box = document.createElement('div');
+            box.className = `effort-box ${filled ? 'filled' : ''}`;
+            box.onclick = () => {
+                appState.effort[i] = !appState.effort[i];
+                saveState();
+                renderEffort(); // Re-render to show change
+            };
+            container.appendChild(box);
+        });
+        document.getElementById('effortCount').innerText = `${appState.effort.filter(Boolean).length}/7`;
+    }
+
+    function renderHabits() {
+        const tbody = document.getElementById('habitsBody');
+        tbody.innerHTML = '';
+        appState.habits.forEach((habit, hIndex) => {
+            const tr = document.createElement('tr');
+            
+            // Name
+            const tdName = document.createElement('td');
+            const input = document.createElement('input');
+            input.className = 'habit-name';
+            input.value = habit.name;
+            input.placeholder = "New Habit...";
+            input.oninput = (e) => {
+                appState.habits[hIndex].name = e.target.value;
+                // Debounced save could go here, but instant is fine for now
+                localStorage.setItem('prithvi_v4', JSON.stringify(appState));
+            };
+            // Save on blur to trigger Firebase sync
+            input.onblur = () => saveState();
+            tdName.appendChild(input);
+            tr.appendChild(tdName);
+
+            // Days
+            habit.days.forEach((checked, dIndex) => {
+                const td = document.createElement('td');
+                const div = document.createElement('div');
+                div.className = `habit-check ${checked ? 'checked' : ''}`;
+                div.onclick = () => {
+                    appState.habits[hIndex].days[dIndex] = !appState.habits[hIndex].days[dIndex];
+                    div.className = `habit-check ${appState.habits[hIndex].days[dIndex] ? 'checked' : ''}`;
+                    saveState();
+                };
+                td.appendChild(div);
+                tr.appendChild(td);
+            });
+            tbody.appendChild(tr);
+        });
+    }
+
+    function renderMetricsInputs() {
+        const container = document.getElementById('dataInputs');
+        // UPDATE EXISTING (for Sync)
+        if (container.children.length > 0) {
+            const inputs = container.querySelectorAll('input');
+            let idx = 0;
+            // Expected order: Screen(0), Sleep(0), Screen(1), Sleep(1)...
+            for(let i=0; i<7; i++) {
+                if(inputs[idx]) inputs[idx].value = appState.metrics.screen[i];
+                idx++;
+                if(inputs[idx]) inputs[idx].value = appState.metrics.sleep[i];
+                idx++;
+            }
+            return;
+        }
+        
+        container.innerHTML = '<strong style="margin-bottom:0.5rem; display:block;">Hrs: Screen | Sleep</strong>';
+        const days = ['M','T','W','T','F','S','S'];
+        
+        days.forEach((day, i) => {
+            const row = document.createElement('div');
+            row.className = 'data-row';
+            
+            const divInputs = document.createElement('div');
+            divInputs.style.display = 'flex';
+            divInputs.style.gap = '5px';
+
+            const screenIn = createNumInput(appState.metrics.screen[i], (v) => {
+                appState.metrics.screen[i] = v; saveState(); drawChart();
+            });
+            const sleepIn = createNumInput(appState.metrics.sleep[i], (v) => {
+                appState.metrics.sleep[i] = v; saveState(); drawChart();
+            });
+
+            divInputs.appendChild(screenIn);
+            divInputs.appendChild(sleepIn);
+            
+            row.innerHTML = `<span>${day}</span>`;
+            row.appendChild(divInputs);
+            container.appendChild(row);
+        });
+    }
+
+    function createNumInput(val, callback) {
+        const input = document.createElement('input');
+        input.type = 'number';
+        input.step = '0.5';
+        input.className = 'data-input-field';
+        input.value = val || '';
+        input.onchange = (e) => callback(parseFloat(e.target.value) || 0);
+        return input;
+    }
+
+    function renderReflection() {
+        setRefVal('ref_worked', 'worked');
+        setRefVal('ref_didnt', 'didnt');
+        setRefVal('ref_adjust', 'adjust');
+    }
+
+    function setRefVal(id, key) {
+        const el = document.getElementById(id);
+        el.value = appState.reflection[key];
+        el.oninput = (e) => {
+            appState.reflection[key] = e.target.value;
+            localStorage.setItem('prithvi_v4', JSON.stringify(appState)); // Quick save
+            autoResize(el);
+        };
+        el.onblur = () => saveState(); // Cloud save
+        autoResize(el);
+    }
+
+    function renderChaos() {
+        const el = document.getElementById('chaosBox');
+        el.value = appState.chaos;
+        el.oninput = (e) => {
+            appState.chaos = e.target.value;
+            localStorage.setItem('prithvi_v4', JSON.stringify(appState));
+            autoResize(el);
+        };
+        el.onblur = () => saveState();
+        autoResize(el);
+    }
+
+    window.clearChaos = function() {
+        if(confirm("Clear chaos box?")) {
+            appState.chaos = "";
+            document.getElementById('chaosBox').value = "";
+            saveState();
+        }
+    }
+
+    window.autoResize = function(el) {
+        el.style.height = 'auto';
+        el.style.height = el.scrollHeight + 'px';
+    }
+
+    // --- CHART ---
+    function drawChart() {
+        const canvas = document.getElementById('metricsChart');
+        if(!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const dpr = window.devicePixelRatio || 1;
+        
+        const rect = canvas.parentElement.getBoundingClientRect();
+        canvas.width = rect.width * dpr;
+        canvas.height = rect.height * dpr;
+        ctx.scale(dpr, dpr);
+
+        const w = rect.width;
+        const h = rect.height;
+        const pad = 20;
+        const chW = w - (pad * 2);
+        const chH = h - (pad * 2);
+
+        ctx.clearRect(0, 0, w, h);
+
+        const days = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
+        const stepX = chW / 7;
+        const maxVal = 12;
+
+        // Axis
+        ctx.strokeStyle = '#eee';
+        ctx.fillStyle = '#999';
+        ctx.font = '10px sans-serif';
+        ctx.textAlign = 'center';
+
+        days.forEach((d, i) => ctx.fillText(d, pad + (i*stepX) + (stepX/2), h - 5));
+        
+        [0, 0.5, 1].forEach(r => {
+            let y = pad + (chH * r);
+            ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w-pad, y); ctx.stroke();
+        });
+
+        // Bars (Screen)
+        ctx.fillStyle = '#ddd';
+        appState.metrics.screen.forEach((v, i) => {
+            let val = Math.min(v, maxVal);
+            let bh = (val/maxVal) * chH;
+            let bw = stepX * 0.4;
+            let x = pad + (i*stepX) + (stepX/2) - (bw/2);
+            let y = (h - pad) - bh;
+            ctx.fillRect(x, y, bw, bh);
+        });
+
+        // Line (Sleep)
+        ctx.beginPath();
+        ctx.strokeStyle = '#222';
+        ctx.lineWidth = 2;
+        appState.metrics.sleep.forEach((v, i) => {
+            let val = Math.min(v, maxVal);
+            let y = (h - pad) - ((val/maxVal) * chH);
+            let x = pad + (i*stepX) + (stepX/2);
+            if(i===0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+    }
+
+    // --- BOOTSTRAP ---
+    init();
+
+</script>
+</body>
+</html>
