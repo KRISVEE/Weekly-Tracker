@@ -7,7 +7,7 @@
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection, enableIndexedDbPersistence } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- FIREBASE SETUP ---
         const firebaseConfig = {
@@ -22,7 +22,7 @@
 
         const appId = window.__app_id || 'default-app';
         let db, auth, user;
-        let unsubscribeSnapshot = null; // To stop listening on logout
+        let unsubscribeSnapshot = null;
 
         try {
             if (firebaseConfig.apiKey) {
@@ -30,46 +30,68 @@
                 auth = getAuth(app);
                 db = getFirestore(app);
                 
+                // Enable offline persistence if possible
+                // enableIndexedDbPersistence(db).catch(err => console.log("Persistence error", err));
+
                 // Monitor Auth State
                 onAuthStateChanged(auth, (u) => {
                     user = u;
                     window.user = u;
                     
                     if (u) {
-                        // LOGGED IN
-                        console.log("Google User Connected:", u.email);
-                        updateStatus('#4caf50', "Synced with Google", null);
-                        toggleAuthBtn(true);
-                        
-                        // If first time login and local name is generic, use Google name
-                        if(window.appState && (window.appState.userName === "USER" || !window.appState.userName)) {
-                            window.appState.userName = u.displayName.split(' ')[0].toUpperCase();
-                            if(typeof window.updateTitle === 'function') window.updateTitle();
-                        }
-
-                        // Force save current local state to cloud immediately to claim the record
-                        if (typeof window.saveState === 'function') window.saveState();
-
-                        // Start Sync
-                        if (typeof window.syncData === 'function') window.syncData();
-                        
+                        // --- LOGGED IN ---
+                        handleLoginSuccess(u);
                     } else {
-                        // LOGGED OUT
-                        console.log("Local Mode (Not Signed In)");
-                        updateStatus('#9e9e9e', "Local Mode (Unsaved to Cloud)", null);
-                        toggleAuthBtn(false);
-                        
-                        // Stop listening to cloud
-                        if(unsubscribeSnapshot) {
-                            unsubscribeSnapshot();
-                            unsubscribeSnapshot = null;
-                        }
+                        // --- LOGGED OUT ---
+                        handleLogout();
                     }
                 });
             }
         } catch (e) {
             console.error("Firebase Init Error:", e);
-            updateStatus('red', "Init Error");
+            alert("Error initializing app. Check console.");
+        }
+
+        function handleLoginSuccess(u) {
+            console.log("Google User Connected:", u.email);
+            
+            // 1. Hide Login Overlay
+            const overlay = document.getElementById('loginOverlay');
+            if(overlay) overlay.style.display = 'none';
+
+            // 2. Auto-Fetch Name (First Name Only)
+            if (u.displayName) {
+                const firstName = u.displayName.split(' ')[0].toUpperCase();
+                // Update local state if different
+                if (window.appState.userName !== firstName) {
+                    window.appState.userName = firstName;
+                    window.saveState(); // Save name change immediately
+                }
+            }
+            
+            updateStatus('#4caf50', "Synced with Google", null);
+            toggleAuthBtn(true);
+            
+            // 3. Force Sync: Push local data to cloud (handling the "Offline -> Online" case)
+            if (typeof window.saveState === 'function') window.saveState();
+
+            // 4. Start Listening to Cloud
+            if (typeof window.syncData === 'function') window.syncData();
+        }
+
+        function handleLogout() {
+            console.log("Logged Out");
+            // Show Login Overlay
+            const overlay = document.getElementById('loginOverlay');
+            if(overlay) overlay.style.display = 'flex';
+            
+            updateStatus('#9e9e9e', "Waiting for Login...", null);
+            toggleAuthBtn(false);
+            
+            if(unsubscribeSnapshot) {
+                unsubscribeSnapshot();
+                unsubscribeSnapshot = null;
+            }
         }
 
         // Auth Functions
@@ -85,9 +107,9 @@
 
         window.logout = async function() {
             try {
-                if(confirm("Log out? Your data will remain on this device.")) {
+                if(confirm("Log out?")) {
                     await signOut(auth);
-                    window.location.reload(); // Refresh to clear state/listeners cleanly
+                    window.location.reload(); 
                 }
             } catch (error) {
                 console.error("Logout Failed:", error);
@@ -98,14 +120,9 @@
             const btn = document.getElementById('authBtn');
             if(btn) {
                 if(isLoggedIn) {
-                    btn.innerText = "G-Logout";
+                    btn.innerText = "Sign Out";
                     btn.onclick = window.logout;
                     btn.style.background = "#555";
-                } else {
-                    btn.innerText = "G-Login";
-                    btn.onclick = window.loginWithGoogle;
-                    btn.style.background = "#4285F4"; // Google Blue
-                    btn.style.color = "white";
                 }
             }
         }
@@ -115,16 +132,16 @@
             if(statusDot) {
                 statusDot.style.backgroundColor = color;
                 statusDot.title = message;
-                
-                if (clickAction) {
-                    statusDot.style.cursor = "pointer";
-                    statusDot.onclick = clickAction;
-                } else {
-                    statusDot.style.cursor = "help";
-                    statusDot.onclick = null;
-                }
+                statusDot.onclick = clickAction || null;
+                statusDot.style.cursor = clickAction ? "pointer" : "help";
             }
         }
+
+        // Handle network recovery explicitly
+        window.addEventListener('online', () => {
+            console.log("Network Online - Syncing...");
+            if(window.user) window.saveState();
+        });
 
         window.db = db;
         window.auth = auth;
@@ -136,8 +153,6 @@
         window.getDoc = getDoc;
         window.onSnapshot = onSnapshot;
         window.updateStatus = updateStatus;
-        
-        // Setter for unsubscribe to be used by syncData
         window.setUnsubscribe = (fn) => { unsubscribeSnapshot = fn; };
     </script>
 
@@ -177,6 +192,47 @@
             gap: 2rem;
         }
 
+        /* --- LOGIN OVERLAY --- */
+        #loginOverlay {
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255, 255, 255, 0.95);
+            z-index: 10000;
+            display: flex; /* Flex by default, hidden by JS */
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            backdrop-filter: blur(5px);
+        }
+        
+        .login-card {
+            text-align: center;
+            padding: 3rem;
+            border: 2px solid #222;
+            background: #fff;
+            box-shadow: 10px 10px 0 rgba(0,0,0,0.1);
+            max-width: 400px;
+            width: 90%;
+        }
+
+        .login-btn {
+            background: #4285F4;
+            color: white;
+            border: none;
+            padding: 1rem 2rem;
+            font-size: 1rem;
+            font-weight: bold;
+            cursor: pointer;
+            margin-top: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-left: auto;
+            margin-right: auto;
+            transition: transform 0.1s;
+        }
+        .login-btn:active { transform: scale(0.98); }
+
         /* --- HEADER & TITLES --- */
         header {
             display: flex;
@@ -196,11 +252,10 @@
         #connectionStatus {
             width: 10px;
             height: 10px;
-            background-color: #9e9e9e; /* Grey default (Local) */
+            background-color: #9e9e9e;
             border-radius: 50%;
             display: inline-block;
             transition: background-color 0.3s;
-            cursor: help;
         }
 
         h1 {
@@ -210,9 +265,7 @@
             text-transform: uppercase;
             letter-spacing: -0.5px;
             line-height: 1.2;
-            cursor: pointer; /* Hint that it's clickable */
         }
-        h1:hover { text-decoration: underline; text-decoration-style: dashed; }
 
         .subtitle {
             font-size: 0.8rem;
@@ -272,10 +325,7 @@
             color: #222;
         }
         
-        .btn-auth {
-            /* Default state set in JS */
-            min-width: 80px;
-        }
+        .btn-auth { min-width: 80px; }
 
         .btn-print:hover, .btn-reset:hover, .btn-help:hover, .btn-auth:hover { opacity: 0.8; }
 
@@ -323,7 +373,7 @@
             width: 100%;
             border-collapse: collapse;
             font-size: 0.9rem;
-            min-width: 500px; /* Force scroll on small mobile */
+            min-width: 500px;
         }
         .quests-table th {
             text-align: center; padding: 0.5rem;
@@ -407,108 +457,84 @@
             padding: 2px 8px; font-size: 0.7rem; text-transform: uppercase;
         }
 
-        /* --- TUTORIAL STYLES (FIXED) --- */
+        /* --- TUTORIAL STYLES --- */
         .tutorial-overlay {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            background: rgba(255, 255, 255, 0.85); /* Dimmed background */
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255, 255, 255, 0.85);
             z-index: 9000;
             display: none;
         }
-
         .tutorial-card {
-            background: #fff;
-            border: 2px solid #222;
-            padding: 1.5rem;
-            max-width: 350px;
-            width: 90%;
-            box-shadow: 0 10px 25px rgba(0,0,0,0.15); /* Clean shadow */
+            background: #fff; border: 2px solid #222; padding: 1.5rem;
+            max-width: 350px; width: 90%;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15);
             z-index: 9002;
             animation: slideIn 0.3s ease;
-            
-            /* DESKTOP POSITION (Bottom Right) */
-            position: fixed;
-            bottom: 30px;
-            right: 30px;
+            position: fixed; bottom: 30px; right: 30px;
         }
-
-        @keyframes slideIn { 
-            from { opacity: 0; transform: translateY(10px); } 
-            to { opacity: 1; transform: translateY(0); } 
-        }
-
+        @keyframes slideIn { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: translateY(0); } }
         .t-title { font-weight: 700; font-size: 1.1rem; margin-bottom: 0.5rem; text-transform: uppercase; }
         .t-text { font-family: var(--font-sans); font-size: 0.9rem; line-height: 1.5; color: #444; margin-bottom: 1rem; }
         .t-progress { font-size: 0.7rem; color: #999; margin-bottom: 1rem; display: block; text-transform: uppercase; letter-spacing: 1px; }
         .t-btn-row { display: flex; justify-content: flex-end; gap: 1rem; }
-
-        /* Highlight Active Element (Pops above overlay) */
+        
         .tutorial-active {
-            position: relative;
-            z-index: 9001 !important;
-            background-color: white;
-            box-shadow: 0 0 0 4px #222; /* Clean border highlight */
-            transition: all 0.3s ease;
-            pointer-events: none;
+            position: relative; z-index: 9001 !important;
+            background-color: white; box-shadow: 0 0 0 4px #222;
+            transition: all 0.3s ease; pointer-events: none;
         }
 
-        /* --- MOBILE OPTIMIZATIONS --- */
+        /* --- MOBILE --- */
         @media (max-width: 768px) {
             body { padding: 0.5rem; }
             .container { padding: 1rem; gap: 1.5rem; }
-            
-            header {
-                flex-direction: column;
-                align-items: flex-start;
-            }
-            .week-input-wrapper {
-                width: 100%;
-                align-items: flex-start;
-                margin-top: 0.5rem;
-            }
+            header { flex-direction: column; align-items: flex-start; }
+            .week-input-wrapper { width: 100%; align-items: flex-start; margin-top: 0.5rem; }
             .editable { text-align: left; width: 100%; }
             .btn-group { width: 100%; justify-content: flex-start; margin-top: 1rem; flex-wrap: wrap;}
-            
             .data-vis-container { grid-template-columns: 1fr; }
             .data-inputs { grid-template-columns: 1fr 1fr; gap: 1rem; display: grid; }
             .reflection-grid { grid-template-columns: 1fr; }
-
-            /* TUTORIAL MOBILE OVERRIDE (Bottom Sheet) */
-            .tutorial-card {
-                bottom: 20px;
-                right: 20px;
-                left: 20px;
-                width: auto;
-                max-width: none;
-            }
+            
+            /* Bottom Sheet Tutorial on Mobile */
+            .tutorial-card { bottom: 20px; right: 20px; left: 20px; width: auto; max-width: none; }
         }
 
         @media print {
             body { background: white; padding: 0; }
             .container { border: none; box-shadow: none; padding: 0; }
-            .btn-group, .btn-clear, .data-inputs, .tutorial-overlay { display: none; }
+            .btn-group, .btn-clear, .data-inputs, .tutorial-overlay, #loginOverlay { display: none; }
             * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
         }
     </style>
 </head>
 <body>
 
+<!-- LOGIN OVERLAY (BLOCKS CONTENT) -->
+<div id="loginOverlay">
+    <div class="login-card">
+        <h1>THE PROTOCOL</h1>
+        <p style="font-family: var(--font-sans); color: #666; margin-top: 0.5rem;">Access Restricted</p>
+        <button class="login-btn" onclick="loginWithGoogle()">
+            <span>🔒 Login with Google</span>
+        </button>
+        <p style="font-size: 0.75rem; color: #999; margin-top: 2rem;">Offline? Data saves locally and syncs on connection.</p>
+    </div>
+</div>
+
 <div class="container">
     <!-- HEADER -->
     <header id="headerSection">
         <div>
             <div class="title-group">
-                <div id="connectionStatus" title="Local Mode"></div>
-                <h1 id="protocolTitle" onclick="renameProtocol()">THE PROTOCOL</h1>
+                <div id="connectionStatus" title="Status"></div>
+                <h1 id="protocolTitle">THE PROTOCOL</h1>
             </div>
-            <div class="subtitle">v3.5 // Google Auth Edition</div>
+            <div class="subtitle">v3.6 // Automated Edition</div>
         </div>
         <div style="width: 100%;">
             <div class="btn-group">
-                <button id="authBtn" class="btn-auth" onclick="loginWithGoogle()">G-Login</button>
+                <button id="authBtn" class="btn-auth" onclick="loginWithGoogle()">Sign Out</button>
                 <button class="btn-help" onclick="startTutorial()">Tutorial</button>
                 <button class="btn-reset" onclick="resetWeek()">Reset</button>
                 <button class="btn-print" onclick="window.print()">🖨️ PDF</button>
@@ -634,7 +660,6 @@
         chaos: ""
     };
 
-    // Attach to window so module can access
     window.appState = JSON.parse(localStorage.getItem('prithvi_v4')) || DEFAULT_STATE;
 
     // --- MIGRATION & INIT ---
@@ -645,12 +670,12 @@
         }
     }
 
-    // --- TUTORIAL DATA & LOGIC ---
+    // --- TUTORIAL LOGIC ---
     const tutorialSteps = [
         {
             target: 'headerSection',
-            title: "1. Setup & Login",
-            text: "Start here. Click 'G-Login' to sync data to the cloud. Enter the 'Week Of' date for your records."
+            title: "1. Weekly Setup",
+            text: "Welcome. Your name was fetched from Google. Enter the 'Week Of' date here to label your records."
         },
         {
             target: 'effortSection',
@@ -734,24 +759,7 @@
 
     // --- MAIN INIT ---
     function init() {
-        // 1. Check Name (Mandatory)
-        if (!window.appState.userName || window.appState.userName === "USER") {
-            setTimeout(() => {
-                let name = "";
-                while (!name || name.trim() === "") {
-                    name = prompt("Enter your name to personalize your protocol (Required):");
-                    if (name && name.trim() !== "") {
-                        window.appState.userName = name.trim();
-                        saveState();
-                        updateTitle();
-                    }
-                }
-            }, 100);
-        } else {
-            updateTitle();
-        }
-
-        // 2. Render UI
+        updateTitle();
         renderWeekInput();
         renderEffort();
         renderHabits();
@@ -760,12 +768,11 @@
         renderChaos();
         drawChart();
 
-        // 3. Listeners
         window.addEventListener('resize', drawChart);
         window.addEventListener('beforeprint', drawChart);
         
-        // 4. Auto-Start Tutorial for New Users
-        if (!window.appState.tutorialSeen) {
+        // Trigger Tutorial only if logged in AND not seen
+        if (window.user && !window.appState.tutorialSeen) {
             setTimeout(() => { startTutorial(); }, 1000);
         }
     }
@@ -776,7 +783,6 @@
         localStorage.setItem('prithvi_v4', JSON.stringify(window.appState));
         updateTitle();
         
-        // Sync to Firebase if user is logged in
         if (window.user && window.db && window.setDoc && window.doc) {
             try {
                 const userDoc = window.doc(window.db, 'artifacts', window.appId, 'users', window.user.uid, 'data', 'tracker');
@@ -793,20 +799,17 @@
 
     window.updateTitle = function() {
         const titleEl = document.getElementById('protocolTitle');
-        const name = window.appState.userName ? window.appState.userName.toUpperCase() : "USER";
+        const name = window.appState.userName ? window.appState.userName : "USER";
         titleEl.innerText = `THE ${name} PROTOCOL`;
-        titleEl.title = "Click to rename"; 
         
         const week = window.appState.weekOf ? window.appState.weekOf : "Weekly";
         document.title = `${week} - ${name} Protocol`;
     }
 
+    // Removed manual rename logic to rely on Google Auth Name
     window.renameProtocol = function() {
-        let newName = prompt("Rename Protocol to:", window.appState.userName);
-        if(newName) {
-            window.appState.userName = newName.trim();
-            saveState();
-        }
+        // Optional: Can re-enable if user wants manual override
+        // But requested to "fetch first name from google" only.
     }
     
     // --- SYNC LOGIC ---
@@ -821,6 +824,7 @@
                 if (JSON.stringify(cloudData) !== JSON.stringify(window.appState)) {
                     console.log("Syncing from cloud...");
                     window.appState = cloudData;
+                    // Ensure habits consistency
                     if (window.appState.habits.length < 7) {
                         const missing = 7 - window.appState.habits.length;
                         for(let i=0; i<missing; i++) {
