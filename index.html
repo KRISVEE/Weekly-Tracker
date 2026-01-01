@@ -30,9 +30,6 @@
                 auth = getAuth(app);
                 db = getFirestore(app);
                 
-                // Enable offline persistence if possible
-                // enableIndexedDbPersistence(db).catch(err => console.log("Persistence error", err));
-
                 // Monitor Auth State
                 onAuthStateChanged(auth, (u) => {
                     user = u;
@@ -256,6 +253,7 @@
             border-radius: 50%;
             display: inline-block;
             transition: background-color 0.3s;
+            cursor: help;
         }
 
         h1 {
@@ -404,6 +402,49 @@
             width: 100%; border: none; font-family: inherit;
             font-size: 1rem; outline: none; background: transparent;
         }
+        
+        /* New Habit Controls */
+        .btn-add-quest {
+            background: transparent;
+            border: 1px dashed #ccc;
+            color: #999;
+            width: 100%;
+            padding: 0.5rem;
+            margin-top: 0.5rem;
+            cursor: pointer;
+            font-size: 0.8rem;
+            text-transform: uppercase;
+            transition: all 0.2s;
+        }
+        .btn-add-quest:hover {
+            border-color: #222;
+            color: #222;
+            background: #fafafa;
+        }
+        
+        .habit-name-wrapper {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+        }
+        
+        .btn-remove-quest {
+            opacity: 0; /* Hidden by default */
+            background: none;
+            border: none;
+            color: #ccc;
+            font-weight: bold;
+            cursor: pointer;
+            padding: 0 0.5rem;
+            font-size: 1.1rem;
+            transition: opacity 0.2s, color 0.2s;
+        }
+        .btn-remove-quest:hover {
+            color: #e53935;
+        }
+        tr:hover .btn-remove-quest {
+            opacity: 1; /* Show on row hover */
+        }
 
         /* --- DATA VIS --- */
         .data-vis-container {
@@ -498,12 +539,14 @@
             
             /* Bottom Sheet Tutorial on Mobile */
             .tutorial-card { bottom: 20px; right: 20px; left: 20px; width: auto; max-width: none; }
+            /* Show delete button always on mobile */
+            .btn-remove-quest { opacity: 1; }
         }
 
         @media print {
             body { background: white; padding: 0; }
             .container { border: none; box-shadow: none; padding: 0; }
-            .btn-group, .btn-clear, .data-inputs, .tutorial-overlay, #loginOverlay { display: none; }
+            .btn-group, .btn-clear, .data-inputs, .tutorial-overlay, #loginOverlay, .btn-add-quest, .btn-remove-quest { display: none; }
             * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
         }
     </style>
@@ -530,7 +573,7 @@
                 <div id="connectionStatus" title="Status"></div>
                 <h1 id="protocolTitle">THE PROTOCOL</h1>
             </div>
-            <div class="subtitle">v3.6 // Automated Edition</div>
+            <div class="subtitle">v3.7 // Automated Edition</div>
         </div>
         <div style="width: 100%;">
             <div class="btn-group">
@@ -572,6 +615,7 @@
                 </thead>
                 <tbody id="habitsBody"></tbody>
             </table>
+            <button class="btn-add-quest" onclick="addHabit()">+ Add Quest</button>
         </div>
     </section>
 
@@ -663,11 +707,9 @@
     window.appState = JSON.parse(localStorage.getItem('prithvi_v4')) || DEFAULT_STATE;
 
     // --- MIGRATION & INIT ---
-    if (window.appState.habits.length < 7) {
-        const missing = 7 - window.appState.habits.length;
-        for(let i=0; i<missing; i++) {
-            window.appState.habits.push({ name: "", days: Array(7).fill(false) });
-        }
+    // Only add defaults if empty, otherwise trust the user's list (allows deletions)
+    if (!window.appState.habits || window.appState.habits.length === 0) {
+        window.appState.habits = DEFAULT_STATE.habits;
     }
 
     // --- TUTORIAL LOGIC ---
@@ -685,7 +727,7 @@
         {
             target: 'habitsSection',
             title: "3. Quests & Habits",
-            text: "Click habit names to customize. Click circles to complete. Simple."
+            text: "Customize your habits here. Use the '+ Add Quest' button to grow your list, or hover over a row to delete one."
         },
         {
             target: 'metricsSection',
@@ -806,10 +848,8 @@
         document.title = `${week} - ${name} Protocol`;
     }
 
-    // Removed manual rename logic to rely on Google Auth Name
     window.renameProtocol = function() {
-        // Optional: Can re-enable if user wants manual override
-        // But requested to "fetch first name from google" only.
+        // Disabled per request for Google Name only
     }
     
     // --- SYNC LOGIC ---
@@ -824,13 +864,7 @@
                 if (JSON.stringify(cloudData) !== JSON.stringify(window.appState)) {
                     console.log("Syncing from cloud...");
                     window.appState = cloudData;
-                    // Ensure habits consistency
-                    if (window.appState.habits.length < 7) {
-                        const missing = 7 - window.appState.habits.length;
-                        for(let i=0; i<missing; i++) {
-                            window.appState.habits.push({ name: "", days: Array(7).fill(false) });
-                        }
-                    }
+                    // No forced migration here to allow user to keep deleted habits
                     localStorage.setItem('prithvi_v4', JSON.stringify(window.appState));
                     refreshUI();
                 }
@@ -854,6 +888,7 @@
     window.resetWeek = function() {
         if (!confirm("Start a new week? Keeps habit names, clears data.")) return;
         window.appState.effort = Array(7).fill(false);
+        // Clean reset of habits: Keep structure, clear days
         window.appState.habits.forEach(h => h.days = Array(7).fill(false));
         window.appState.metrics.screen = Array(7).fill(0);
         window.appState.metrics.sleep = Array(7).fill(0);
@@ -862,6 +897,21 @@
         saveState();
         refreshUI();
         document.querySelectorAll('textarea').forEach(t => t.value = "");
+    }
+
+    // --- HABIT MANAGEMENT ---
+    window.addHabit = function() {
+        window.appState.habits.push({ name: "", days: Array(7).fill(false) });
+        saveState();
+        renderHabits();
+    }
+
+    window.removeHabit = function(index) {
+        if(confirm("Delete this quest?")) {
+            window.appState.habits.splice(index, 1);
+            saveState();
+            renderHabits();
+        }
     }
 
     // --- RENDERERS ---
@@ -895,19 +945,35 @@
         tbody.innerHTML = '';
         window.appState.habits.forEach((habit, hIndex) => {
             const tr = document.createElement('tr');
+            
+            // Name Column with Delete Button
             const tdName = document.createElement('td');
+            const wrapper = document.createElement('div');
+            wrapper.className = 'habit-name-wrapper';
+            
             const input = document.createElement('input');
             input.className = 'habit-name';
             input.value = habit.name;
             input.placeholder = "New Habit...";
+            input.style.flex = "1";
             input.oninput = (e) => {
                 window.appState.habits[hIndex].name = e.target.value;
                 localStorage.setItem('prithvi_v4', JSON.stringify(window.appState));
             };
             input.onblur = () => saveState();
-            tdName.appendChild(input);
+            
+            const delBtn = document.createElement('button');
+            delBtn.className = 'btn-remove-quest';
+            delBtn.innerHTML = '×';
+            delBtn.title = "Delete Quest";
+            delBtn.onclick = () => window.removeHabit(hIndex);
+
+            wrapper.appendChild(input);
+            wrapper.appendChild(delBtn);
+            tdName.appendChild(wrapper);
             tr.appendChild(tdName);
 
+            // Days Columns
             habit.days.forEach((checked, dIndex) => {
                 const td = document.createElement('td');
                 const div = document.createElement('div');
