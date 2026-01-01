@@ -6,7 +6,7 @@
     <title>Weekly Tracker</title>
     <script type="module">
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getAuth, signInWithPopup, GoogleAuthProvider, signOut, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
         import { getFirestore, doc, setDoc, getDoc, onSnapshot, collection } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
 
         // --- FIREBASE SETUP ---
@@ -22,6 +22,7 @@
 
         const appId = window.__app_id || 'default-app';
         let db, auth, user;
+        let unsubscribeSnapshot = null; // To stop listening on logout
 
         try {
             if (firebaseConfig.apiKey) {
@@ -29,35 +30,84 @@
                 auth = getAuth(app);
                 db = getFirestore(app);
                 
-                signInAnonymously(auth).catch((error) => {
-                    console.error("Auth failed", error);
-                    updateStatus('red', "Auth Failed: " + error.message);
-                });
-
+                // Monitor Auth State
                 onAuthStateChanged(auth, (u) => {
+                    user = u;
+                    window.user = u;
+                    
                     if (u) {
-                        user = u;
-                        window.user = u;
-                        console.log("Firebase Connected. User ID:", u.uid);
-                        updateStatus('#4caf50', "Online & Synced");
-
-                        // CRITICAL FIX: Force save local data to cloud immediately upon connection
-                        if (typeof window.saveState === 'function') {
-                            window.saveState();
+                        // LOGGED IN
+                        console.log("Google User Connected:", u.email);
+                        updateStatus('#4caf50', "Synced with Google", null);
+                        toggleAuthBtn(true);
+                        
+                        // If first time login and local name is generic, use Google name
+                        if(window.appState && (window.appState.userName === "USER" || !window.appState.userName)) {
+                            window.appState.userName = u.displayName.split(' ')[0].toUpperCase();
+                            if(typeof window.updateTitle === 'function') window.updateTitle();
                         }
 
-                        // Then start listening for changes from other devices
-                        if (typeof window.syncData === 'function') {
-                            window.syncData();
-                        }
+                        // Force save current local state to cloud immediately to claim the record
+                        if (typeof window.saveState === 'function') window.saveState();
+
+                        // Start Sync
+                        if (typeof window.syncData === 'function') window.syncData();
+                        
                     } else {
-                        updateStatus('red', "Disconnected");
+                        // LOGGED OUT
+                        console.log("Local Mode (Not Signed In)");
+                        updateStatus('#9e9e9e', "Local Mode (Unsaved to Cloud)", null);
+                        toggleAuthBtn(false);
+                        
+                        // Stop listening to cloud
+                        if(unsubscribeSnapshot) {
+                            unsubscribeSnapshot();
+                            unsubscribeSnapshot = null;
+                        }
                     }
                 });
             }
         } catch (e) {
             console.error("Firebase Init Error:", e);
             updateStatus('red', "Init Error");
+        }
+
+        // Auth Functions
+        window.loginWithGoogle = async function() {
+            try {
+                const provider = new GoogleAuthProvider();
+                await signInWithPopup(auth, provider);
+            } catch (error) {
+                console.error("Login Failed:", error);
+                alert("Login Failed: " + error.message);
+            }
+        };
+
+        window.logout = async function() {
+            try {
+                if(confirm("Log out? Your data will remain on this device.")) {
+                    await signOut(auth);
+                    window.location.reload(); // Refresh to clear state/listeners cleanly
+                }
+            } catch (error) {
+                console.error("Logout Failed:", error);
+            }
+        };
+
+        function toggleAuthBtn(isLoggedIn) {
+            const btn = document.getElementById('authBtn');
+            if(btn) {
+                if(isLoggedIn) {
+                    btn.innerText = "G-Logout";
+                    btn.onclick = window.logout;
+                    btn.style.background = "#555";
+                } else {
+                    btn.innerText = "G-Login";
+                    btn.onclick = window.loginWithGoogle;
+                    btn.style.background = "#4285F4"; // Google Blue
+                    btn.style.color = "white";
+                }
+            }
         }
 
         function updateStatus(color, message, clickAction) {
@@ -86,6 +136,9 @@
         window.getDoc = getDoc;
         window.onSnapshot = onSnapshot;
         window.updateStatus = updateStatus;
+        
+        // Setter for unsubscribe to be used by syncData
+        window.setUnsubscribe = (fn) => { unsubscribeSnapshot = fn; };
     </script>
 
     <style>
@@ -143,7 +196,7 @@
         #connectionStatus {
             width: 10px;
             height: 10px;
-            background-color: #e53935; /* Red default */
+            background-color: #9e9e9e; /* Grey default (Local) */
             border-radius: 50%;
             display: inline-block;
             transition: background-color 0.3s;
@@ -197,7 +250,7 @@
             margin-bottom: 0.5rem;
         }
 
-        .btn-print, .btn-reset {
+        .btn-print, .btn-reset, .btn-help, .btn-auth {
             background: var(--text-color);
             color: var(--bg-color);
             border: none;
@@ -205,16 +258,26 @@
             font-size: 0.75rem;
             text-transform: uppercase;
             font-weight: 700;
-            transition: opacity 0.2s;
+            transition: opacity 0.2s, background 0.2s;
         }
-
+        
         .btn-reset {
             background: white;
             color: var(--text-color);
             border: 1px solid var(--text-color);
         }
 
-        .btn-print:hover, .btn-reset:hover { opacity: 0.8; }
+        .btn-help {
+            background: #eee;
+            color: #222;
+        }
+        
+        .btn-auth {
+            /* Default state set in JS */
+            min-width: 80px;
+        }
+
+        .btn-print:hover, .btn-reset:hover, .btn-help:hover, .btn-auth:hover { opacity: 0.8; }
 
         /* --- SECTIONS --- */
         h2 {
@@ -344,6 +407,54 @@
             padding: 2px 8px; font-size: 0.7rem; text-transform: uppercase;
         }
 
+        /* --- TUTORIAL STYLES (FIXED) --- */
+        .tutorial-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(255, 255, 255, 0.85); /* Dimmed background */
+            z-index: 9000;
+            display: none;
+        }
+
+        .tutorial-card {
+            background: #fff;
+            border: 2px solid #222;
+            padding: 1.5rem;
+            max-width: 350px;
+            width: 90%;
+            box-shadow: 0 10px 25px rgba(0,0,0,0.15); /* Clean shadow */
+            z-index: 9002;
+            animation: slideIn 0.3s ease;
+            
+            /* DESKTOP POSITION (Bottom Right) */
+            position: fixed;
+            bottom: 30px;
+            right: 30px;
+        }
+
+        @keyframes slideIn { 
+            from { opacity: 0; transform: translateY(10px); } 
+            to { opacity: 1; transform: translateY(0); } 
+        }
+
+        .t-title { font-weight: 700; font-size: 1.1rem; margin-bottom: 0.5rem; text-transform: uppercase; }
+        .t-text { font-family: var(--font-sans); font-size: 0.9rem; line-height: 1.5; color: #444; margin-bottom: 1rem; }
+        .t-progress { font-size: 0.7rem; color: #999; margin-bottom: 1rem; display: block; text-transform: uppercase; letter-spacing: 1px; }
+        .t-btn-row { display: flex; justify-content: flex-end; gap: 1rem; }
+
+        /* Highlight Active Element (Pops above overlay) */
+        .tutorial-active {
+            position: relative;
+            z-index: 9001 !important;
+            background-color: white;
+            box-shadow: 0 0 0 4px #222; /* Clean border highlight */
+            transition: all 0.3s ease;
+            pointer-events: none;
+        }
+
         /* --- MOBILE OPTIMIZATIONS --- */
         @media (max-width: 768px) {
             body { padding: 0.5rem; }
@@ -359,26 +470,26 @@
                 margin-top: 0.5rem;
             }
             .editable { text-align: left; width: 100%; }
-            .btn-group { width: 100%; justify-content: space-between; margin-top: 1rem;}
+            .btn-group { width: 100%; justify-content: flex-start; margin-top: 1rem; flex-wrap: wrap;}
             
-            .data-vis-container {
-                grid-template-columns: 1fr; /* Stack chart and inputs */
-            }
-            .data-inputs {
-                display: grid;
-                grid-template-columns: 1fr 1fr; /* 2 columns for inputs on mobile */
-                gap: 1rem;
-            }
-            
-            .reflection-grid {
-                grid-template-columns: 1fr; /* Stack textareas */
+            .data-vis-container { grid-template-columns: 1fr; }
+            .data-inputs { grid-template-columns: 1fr 1fr; gap: 1rem; display: grid; }
+            .reflection-grid { grid-template-columns: 1fr; }
+
+            /* TUTORIAL MOBILE OVERRIDE (Bottom Sheet) */
+            .tutorial-card {
+                bottom: 20px;
+                right: 20px;
+                left: 20px;
+                width: auto;
+                max-width: none;
             }
         }
 
         @media print {
             body { background: white; padding: 0; }
             .container { border: none; box-shadow: none; padding: 0; }
-            .btn-group, .btn-clear, .data-inputs { display: none; }
+            .btn-group, .btn-clear, .data-inputs, .tutorial-overlay { display: none; }
             * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
         }
     </style>
@@ -387,18 +498,20 @@
 
 <div class="container">
     <!-- HEADER -->
-    <header>
+    <header id="headerSection">
         <div>
             <div class="title-group">
-                <div id="connectionStatus" title="Connecting..."></div>
+                <div id="connectionStatus" title="Local Mode"></div>
                 <h1 id="protocolTitle" onclick="renameProtocol()">THE PROTOCOL</h1>
             </div>
-            <div class="subtitle">v3.4 // Optimized Edition</div>
+            <div class="subtitle">v3.5 // Google Auth Edition</div>
         </div>
         <div style="width: 100%;">
             <div class="btn-group">
-                <button class="btn-reset" onclick="resetWeek()">↺ Reset Week</button>
-                <button class="btn-print" onclick="window.print()">🖨️ PDF / Drive</button>
+                <button id="authBtn" class="btn-auth" onclick="loginWithGoogle()">G-Login</button>
+                <button class="btn-help" onclick="startTutorial()">Tutorial</button>
+                <button class="btn-reset" onclick="resetWeek()">Reset</button>
+                <button class="btn-print" onclick="window.print()">🖨️ PDF</button>
             </div>
             <div class="week-input-wrapper">
                 <label style="font-size: 0.7rem; font-weight: bold; font-family: var(--font-sans);">WEEK OF:</label>
@@ -408,7 +521,7 @@
     </header>
 
     <!-- EFFORT SCORE -->
-    <section>
+    <section id="effortSection">
         <h2>Effort Score</h2>
         <div class="effort-container">
             <div class="effort-boxes" id="effortContainer"></div>
@@ -421,7 +534,7 @@
     </section>
 
     <!-- QUESTS / HABITS -->
-    <section>
+    <section id="habitsSection">
         <h2>Quests & Habits</h2>
         <div class="table-wrapper">
             <table class="quests-table">
@@ -437,7 +550,7 @@
     </section>
 
     <!-- DATA VISUALIZATION -->
-    <section>
+    <section id="metricsSection">
         <h2>Bio-Metrics</h2>
         <div class="data-vis-container">
             <div>
@@ -452,7 +565,7 @@
     </section>
 
     <!-- REFLECTION -->
-    <section>
+    <section id="reflectionSection">
         <h2>Weekly De-Brief</h2>
         <div class="reflection-grid">
             <div class="reflection-box">
@@ -471,13 +584,26 @@
     </section>
 
     <!-- CHAOS BOX -->
-    <section class="chaos-box">
+    <section class="chaos-box" id="chaosSection">
         <div class="chaos-header">
             <h2>Chaos Box</h2>
             <button class="btn-clear" onclick="clearChaos()">Clear</button>
         </div>
         <textarea id="chaosBox" placeholder="Unload your mind here..." oninput="autoResize(this)"></textarea>
     </section>
+</div>
+
+<!-- TUTORIAL OVERLAY -->
+<div id="tutorialOverlay" class="tutorial-overlay">
+    <div class="tutorial-card">
+        <div class="t-title" id="tTitle">Welcome</div>
+        <div class="t-text" id="tText">Content goes here</div>
+        <span class="t-progress" id="tProgress">1 / 5</span>
+        <div class="t-btn-row">
+            <button class="btn-help" style="background:transparent; border:1px solid #ccc; font-size:0.7rem;" onclick="endTutorial()">Exit</button>
+            <button class="btn-print" id="tNextBtn" style="font-size:0.7rem;" onclick="nextTutorialStep()">Next ></button>
+        </div>
+    </div>
 </div>
 
 <script type="module">
@@ -489,6 +615,7 @@
     const DEFAULT_STATE = {
         userName: null,
         weekOf: "",
+        tutorialSeen: false,
         effort: Array(7).fill(false),
         habits: [
             { name: "Deep Work (2h)", days: Array(7).fill(false) },
@@ -507,30 +634,118 @@
         chaos: ""
     };
 
-    let appState = JSON.parse(localStorage.getItem('prithvi_v4')) || DEFAULT_STATE;
+    // Attach to window so module can access
+    window.appState = JSON.parse(localStorage.getItem('prithvi_v4')) || DEFAULT_STATE;
 
     // --- MIGRATION & INIT ---
-    if (appState.habits.length < 7) {
-        const missing = 7 - appState.habits.length;
+    if (window.appState.habits.length < 7) {
+        const missing = 7 - window.appState.habits.length;
         for(let i=0; i<missing; i++) {
-            appState.habits.push({ name: "", days: Array(7).fill(false) });
+            window.appState.habits.push({ name: "", days: Array(7).fill(false) });
         }
+    }
+
+    // --- TUTORIAL DATA & LOGIC ---
+    const tutorialSteps = [
+        {
+            target: 'headerSection',
+            title: "1. Setup & Login",
+            text: "Start here. Click 'G-Login' to sync data to the cloud. Enter the 'Week Of' date for your records."
+        },
+        {
+            target: 'effortSection',
+            title: "2. The Effort Score",
+            text: "This is your daily 'Show Up' metric. Aim for 4/7 consistent days to build momentum."
+        },
+        {
+            target: 'habitsSection',
+            title: "3. Quests & Habits",
+            text: "Click habit names to customize. Click circles to complete. Simple."
+        },
+        {
+            target: 'metricsSection',
+            title: "4. Bio-Metrics",
+            text: "Input Screen Time (Srn) and Sleep (Slp). The graph updates live."
+        },
+        {
+            target: 'reflectionSection',
+            title: "5. Weekly De-Brief",
+            text: "Be honest. What worked? What broke? Adjust your strategy here."
+        },
+        {
+            target: 'chaosSection',
+            title: "6. The Chaos Box",
+            text: "Dump tasks, anxieties, or random thoughts here to keep your mind clear."
+        }
+    ];
+
+    let currentStep = 0;
+
+    window.startTutorial = function() {
+        currentStep = 0;
+        document.getElementById('tutorialOverlay').style.display = 'block';
+        showStep(0);
+    }
+
+    window.nextTutorialStep = function() {
+        if (tutorialSteps[currentStep].target) {
+            document.getElementById(tutorialSteps[currentStep].target).classList.remove('tutorial-active');
+        }
+        currentStep++;
+        if (currentStep >= tutorialSteps.length) {
+            endTutorial();
+        } else {
+            showStep(currentStep);
+        }
+    }
+
+    function showStep(index) {
+        const step = tutorialSteps[index];
+        document.getElementById('tTitle').innerText = step.title;
+        document.getElementById('tText').innerText = step.text;
+        document.getElementById('tProgress').innerText = `${index + 1} / ${tutorialSteps.length}`;
+        
+        if (step.target) {
+            const el = document.getElementById(step.target);
+            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            el.classList.add('tutorial-active');
+        }
+
+        const btn = document.getElementById('tNextBtn');
+        if (index === tutorialSteps.length - 1) {
+            btn.innerText = "Finish";
+            btn.style.backgroundColor = "#4caf50";
+            btn.style.color = "white";
+        } else {
+            btn.innerText = "Next >";
+            btn.style.backgroundColor = "";
+            btn.style.color = "";
+        }
+    }
+
+    window.endTutorial = function() {
+        if (currentStep < tutorialSteps.length && tutorialSteps[currentStep].target) {
+            document.getElementById(tutorialSteps[currentStep].target).classList.remove('tutorial-active');
+        }
+        document.getElementById('tutorialOverlay').style.display = 'none';
+        window.appState.tutorialSeen = true;
+        saveState();
     }
 
     // --- MAIN INIT ---
     function init() {
-        // 1. Check Name (Strict check to force prompt if "USER" default found)
-        if (!appState.userName || appState.userName === "USER") {
-            // Small timeout to let UI render first
+        // 1. Check Name (Mandatory)
+        if (!window.appState.userName || window.appState.userName === "USER") {
             setTimeout(() => {
-                let name = prompt("Enter your name to personalize your protocol:");
-                if (name) {
-                    appState.userName = name.trim();
-                    saveState();
-                } else if (!appState.userName) {
-                    appState.userName = "USER"; // Default if cancelled
+                let name = "";
+                while (!name || name.trim() === "") {
+                    name = prompt("Enter your name to personalize your protocol (Required):");
+                    if (name && name.trim() !== "") {
+                        window.appState.userName = name.trim();
+                        saveState();
+                        updateTitle();
+                    }
                 }
-                updateTitle();
             }, 100);
         } else {
             updateTitle();
@@ -545,107 +760,84 @@
         renderChaos();
         drawChart();
 
-        // 3. Setup Listeners
+        // 3. Listeners
         window.addEventListener('resize', drawChart);
         window.addEventListener('beforeprint', drawChart);
         
-        // 4. Try Sync (if user already loaded)
-        if(typeof window.syncData === 'function') {
-            window.syncData();
+        // 4. Auto-Start Tutorial for New Users
+        if (!window.appState.tutorialSeen) {
+            setTimeout(() => { startTutorial(); }, 1000);
         }
     }
 
     // --- CORE FUNCTIONS ---
 
-    // Expose saveState globally so Module can call it
     window.saveState = function() {
-        // Save to Local Storage (Instant)
-        localStorage.setItem('prithvi_v4', JSON.stringify(appState));
+        localStorage.setItem('prithvi_v4', JSON.stringify(window.appState));
         updateTitle();
         
-        // Sync to Firebase (Background)
+        // Sync to Firebase if user is logged in
         if (window.user && window.db && window.setDoc && window.doc) {
             try {
-                // Save specific data
                 const userDoc = window.doc(window.db, 'artifacts', window.appId, 'users', window.user.uid, 'data', 'tracker');
-                // Save meta data (Name)
                 const userMetaDoc = window.doc(window.db, 'artifacts', window.appId, 'users', window.user.uid);
                 
-                window.setDoc(userMetaDoc, { name: appState.userName, lastUpdated: new Date() }, { merge: true });
-                window.setDoc(userDoc, appState, { merge: true })
-                    .then(() => {
-                        console.log("Saved to Cloud");
-                        if(window.updateStatus) window.updateStatus('#4caf50', "Online & Synced");
-                    })
-                    .catch((err) => {
-                        console.error("Save Error:", err);
-                        if (err.code === 'permission-denied' || err.message.includes("permissions")) {
-                             if(window.updateStatus) window.updateStatus('#ff9800', "⚠️ Permission Denied (Click for Fix)", () => {
-                                 alert("FIREBASE PERMISSION ERROR\n\nYour database is blocking writes. To fix:\n\n1. Go to Firebase Console > Build > Firestore Database > Rules\n2. Replace the code with this:\n\nrules_version = '2';\nservice cloud.firestore {\n  match /databases/{database}/documents {\n    match /{document=**} {\n      allow read, write: if request.auth != null;\n    }\n  }\n}\n\n3. Click Publish.");
-                             });
-                        } else {
-                            if(window.updateStatus) window.updateStatus('#ff9800', "Save Error: " + err.message);
-                        }
-                    });
+                window.setDoc(userMetaDoc, { name: window.appState.userName, lastUpdated: new Date() }, { merge: true });
+                window.setDoc(userDoc, window.appState, { merge: true })
+                    .catch((err) => console.error("Save Error:", err));
             } catch (e) {
                 console.error("Firestore Error:", e);
-                if(window.updateStatus) window.updateStatus('red', "Firestore Error");
             }
         }
     }
 
-    function updateTitle() {
+    window.updateTitle = function() {
         const titleEl = document.getElementById('protocolTitle');
-        const name = appState.userName ? appState.userName.toUpperCase() : "USER";
+        const name = window.appState.userName ? window.appState.userName.toUpperCase() : "USER";
         titleEl.innerText = `THE ${name} PROTOCOL`;
-        titleEl.title = "Click to rename"; // Tooltip
+        titleEl.title = "Click to rename"; 
         
-        const week = appState.weekOf ? appState.weekOf : "Weekly";
+        const week = window.appState.weekOf ? window.appState.weekOf : "Weekly";
         document.title = `${week} - ${name} Protocol`;
     }
 
     window.renameProtocol = function() {
-        let newName = prompt("Rename Protocol to:", appState.userName);
+        let newName = prompt("Rename Protocol to:", window.appState.userName);
         if(newName) {
-            appState.userName = newName.trim();
+            window.appState.userName = newName.trim();
             saveState();
         }
     }
     
-    // --- FIREBASE SYNC LOGIC ---
+    // --- SYNC LOGIC ---
     window.syncData = function() {
         if (!window.user || !window.db || !window.doc || !window.onSnapshot) return;
         
-        // Prevent multiple listeners
-        if (window._isSyncing) return;
-        window._isSyncing = true;
-        
         const docRef = window.doc(window.db, 'artifacts', window.appId, 'users', window.user.uid, 'data', 'tracker');
         
-        window.onSnapshot(docRef, (snap) => {
+        const unsub = window.onSnapshot(docRef, (snap) => {
             if (snap.exists()) {
                 const cloudData = snap.data();
-                // Simple check to avoid loops (Cloud vs Local match)
-                if (JSON.stringify(cloudData) !== JSON.stringify(appState)) {
-                    console.log("Syncing data from cloud...");
-                    appState = cloudData;
-                    // Run migration check again just in case cloud data is old structure
-                    if (appState.habits.length < 7) {
-                        const missing = 7 - appState.habits.length;
+                if (JSON.stringify(cloudData) !== JSON.stringify(window.appState)) {
+                    console.log("Syncing from cloud...");
+                    window.appState = cloudData;
+                    if (window.appState.habits.length < 7) {
+                        const missing = 7 - window.appState.habits.length;
                         for(let i=0; i<missing; i++) {
-                            appState.habits.push({ name: "", days: Array(7).fill(false) });
+                            window.appState.habits.push({ name: "", days: Array(7).fill(false) });
                         }
                     }
-                    
-                    localStorage.setItem('prithvi_v4', JSON.stringify(appState));
+                    localStorage.setItem('prithvi_v4', JSON.stringify(window.appState));
                     refreshUI();
                 }
             }
         });
+        
+        if(window.setUnsubscribe) window.setUnsubscribe(unsub);
     };
     
     function refreshUI() {
-        updateTitle();
+        window.updateTitle();
         renderWeekInput();
         renderEffort();
         renderHabits();
@@ -656,30 +848,24 @@
     }
 
     window.resetWeek = function() {
-        if (!confirm("Start a new week? This keeps your Habit Names but clears all checkboxes and data.")) return;
-        
-        // Reset logic
-        appState.effort = Array(7).fill(false);
-        appState.habits.forEach(h => h.days = Array(7).fill(false));
-        appState.metrics.screen = Array(7).fill(0);
-        appState.metrics.sleep = Array(7).fill(0);
-        appState.reflection = { worked: "", didnt: "", adjust: "" };
-        appState.chaos = "";
-        
+        if (!confirm("Start a new week? Keeps habit names, clears data.")) return;
+        window.appState.effort = Array(7).fill(false);
+        window.appState.habits.forEach(h => h.days = Array(7).fill(false));
+        window.appState.metrics.screen = Array(7).fill(0);
+        window.appState.metrics.sleep = Array(7).fill(0);
+        window.appState.reflection = { worked: "", didnt: "", adjust: "" };
+        window.appState.chaos = "";
         saveState();
-        // Re-render everything
         refreshUI();
-        // Clear textareas manually since value binding is one-way on init
         document.querySelectorAll('textarea').forEach(t => t.value = "");
     }
 
     // --- RENDERERS ---
-
     function renderWeekInput() {
         const el = document.getElementById('weekOf');
-        el.value = appState.weekOf;
+        el.value = window.appState.weekOf;
         el.oninput = (e) => {
-            appState.weekOf = e.target.value;
+            window.appState.weekOf = e.target.value;
             saveState();
         };
     }
@@ -687,49 +873,44 @@
     function renderEffort() {
         const container = document.getElementById('effortContainer');
         container.innerHTML = '';
-        appState.effort.forEach((filled, i) => {
+        window.appState.effort.forEach((filled, i) => {
             const box = document.createElement('div');
             box.className = `effort-box ${filled ? 'filled' : ''}`;
             box.onclick = () => {
-                appState.effort[i] = !appState.effort[i];
+                window.appState.effort[i] = !window.appState.effort[i];
                 saveState();
-                renderEffort(); // Re-render to show change
+                renderEffort();
             };
             container.appendChild(box);
         });
-        document.getElementById('effortCount').innerText = `${appState.effort.filter(Boolean).length}/7`;
+        document.getElementById('effortCount').innerText = `${window.appState.effort.filter(Boolean).length}/7`;
     }
 
     function renderHabits() {
         const tbody = document.getElementById('habitsBody');
         tbody.innerHTML = '';
-        appState.habits.forEach((habit, hIndex) => {
+        window.appState.habits.forEach((habit, hIndex) => {
             const tr = document.createElement('tr');
-            
-            // Name
             const tdName = document.createElement('td');
             const input = document.createElement('input');
             input.className = 'habit-name';
             input.value = habit.name;
             input.placeholder = "New Habit...";
             input.oninput = (e) => {
-                appState.habits[hIndex].name = e.target.value;
-                // Debounced save could go here, but instant is fine for now
-                localStorage.setItem('prithvi_v4', JSON.stringify(appState));
+                window.appState.habits[hIndex].name = e.target.value;
+                localStorage.setItem('prithvi_v4', JSON.stringify(window.appState));
             };
-            // Save on blur to trigger Firebase sync
             input.onblur = () => saveState();
             tdName.appendChild(input);
             tr.appendChild(tdName);
 
-            // Days
             habit.days.forEach((checked, dIndex) => {
                 const td = document.createElement('td');
                 const div = document.createElement('div');
                 div.className = `habit-check ${checked ? 'checked' : ''}`;
                 div.onclick = () => {
-                    appState.habits[hIndex].days[dIndex] = !appState.habits[hIndex].days[dIndex];
-                    div.className = `habit-check ${appState.habits[hIndex].days[dIndex] ? 'checked' : ''}`;
+                    window.appState.habits[hIndex].days[dIndex] = !window.appState.habits[hIndex].days[dIndex];
+                    div.className = `habit-check ${window.appState.habits[hIndex].days[dIndex] ? 'checked' : ''}`;
                     saveState();
                 };
                 td.appendChild(div);
@@ -741,41 +922,33 @@
 
     function renderMetricsInputs() {
         const container = document.getElementById('dataInputs');
-        // UPDATE EXISTING (for Sync)
         if (container.children.length > 0) {
             const inputs = container.querySelectorAll('input');
             let idx = 0;
-            // Expected order: Screen(0), Sleep(0), Screen(1), Sleep(1)...
             for(let i=0; i<7; i++) {
-                if(inputs[idx]) inputs[idx].value = appState.metrics.screen[i];
+                if(inputs[idx]) inputs[idx].value = window.appState.metrics.screen[i];
                 idx++;
-                if(inputs[idx]) inputs[idx].value = appState.metrics.sleep[i];
+                if(inputs[idx]) inputs[idx].value = window.appState.metrics.sleep[i];
                 idx++;
             }
             return;
         }
-        
         container.innerHTML = '<strong style="margin-bottom:0.5rem; display:block;">Hrs: Screen | Sleep</strong>';
         const days = ['M','T','W','T','F','S','S'];
-        
         days.forEach((day, i) => {
             const row = document.createElement('div');
             row.className = 'data-row';
-            
             const divInputs = document.createElement('div');
             divInputs.style.display = 'flex';
             divInputs.style.gap = '5px';
-
-            const screenIn = createNumInput(appState.metrics.screen[i], (v) => {
-                appState.metrics.screen[i] = v; saveState(); drawChart();
+            const screenIn = createNumInput(window.appState.metrics.screen[i], (v) => {
+                window.appState.metrics.screen[i] = v; saveState(); drawChart();
             });
-            const sleepIn = createNumInput(appState.metrics.sleep[i], (v) => {
-                appState.metrics.sleep[i] = v; saveState(); drawChart();
+            const sleepIn = createNumInput(window.appState.metrics.sleep[i], (v) => {
+                window.appState.metrics.sleep[i] = v; saveState(); drawChart();
             });
-
             divInputs.appendChild(screenIn);
             divInputs.appendChild(sleepIn);
-            
             row.innerHTML = `<span>${day}</span>`;
             row.appendChild(divInputs);
             container.appendChild(row);
@@ -800,22 +973,22 @@
 
     function setRefVal(id, key) {
         const el = document.getElementById(id);
-        el.value = appState.reflection[key];
+        el.value = window.appState.reflection[key];
         el.oninput = (e) => {
-            appState.reflection[key] = e.target.value;
-            localStorage.setItem('prithvi_v4', JSON.stringify(appState)); // Quick save
+            window.appState.reflection[key] = e.target.value;
+            localStorage.setItem('prithvi_v4', JSON.stringify(window.appState));
             autoResize(el);
         };
-        el.onblur = () => saveState(); // Cloud save
+        el.onblur = () => saveState();
         autoResize(el);
     }
 
     function renderChaos() {
         const el = document.getElementById('chaosBox');
-        el.value = appState.chaos;
+        el.value = window.appState.chaos;
         el.oninput = (e) => {
-            appState.chaos = e.target.value;
-            localStorage.setItem('prithvi_v4', JSON.stringify(appState));
+            window.appState.chaos = e.target.value;
+            localStorage.setItem('prithvi_v4', JSON.stringify(window.appState));
             autoResize(el);
         };
         el.onblur = () => saveState();
@@ -824,7 +997,7 @@
 
     window.clearChaos = function() {
         if(confirm("Clear chaos box?")) {
-            appState.chaos = "";
+            window.appState.chaos = "";
             document.getElementById('chaosBox').value = "";
             saveState();
         }
@@ -841,40 +1014,30 @@
         if(!canvas) return;
         const ctx = canvas.getContext('2d');
         const dpr = window.devicePixelRatio || 1;
-        
         const rect = canvas.parentElement.getBoundingClientRect();
         canvas.width = rect.width * dpr;
         canvas.height = rect.height * dpr;
         ctx.scale(dpr, dpr);
-
         const w = rect.width;
         const h = rect.height;
         const pad = 20;
         const chW = w - (pad * 2);
         const chH = h - (pad * 2);
-
         ctx.clearRect(0, 0, w, h);
-
         const days = ['M', 'T', 'W', 'T', 'F', 'S', 'S'];
         const stepX = chW / 7;
         const maxVal = 12;
-
-        // Axis
         ctx.strokeStyle = '#eee';
         ctx.fillStyle = '#999';
         ctx.font = '10px sans-serif';
         ctx.textAlign = 'center';
-
         days.forEach((d, i) => ctx.fillText(d, pad + (i*stepX) + (stepX/2), h - 5));
-        
         [0, 0.5, 1].forEach(r => {
             let y = pad + (chH * r);
             ctx.beginPath(); ctx.moveTo(pad, y); ctx.lineTo(w-pad, y); ctx.stroke();
         });
-
-        // Bars (Screen)
         ctx.fillStyle = '#ddd';
-        appState.metrics.screen.forEach((v, i) => {
+        window.appState.metrics.screen.forEach((v, i) => {
             let val = Math.min(v, maxVal);
             let bh = (val/maxVal) * chH;
             let bw = stepX * 0.4;
@@ -882,12 +1045,10 @@
             let y = (h - pad) - bh;
             ctx.fillRect(x, y, bw, bh);
         });
-
-        // Line (Sleep)
         ctx.beginPath();
         ctx.strokeStyle = '#222';
         ctx.lineWidth = 2;
-        appState.metrics.sleep.forEach((v, i) => {
+        window.appState.metrics.sleep.forEach((v, i) => {
             let val = Math.min(v, maxVal);
             let y = (h - pad) - ((val/maxVal) * chH);
             let x = pad + (i*stepX) + (stepX/2);
@@ -896,9 +1057,7 @@
         ctx.stroke();
     }
 
-    // --- BOOTSTRAP ---
     init();
-
 </script>
 </body>
 </html>
